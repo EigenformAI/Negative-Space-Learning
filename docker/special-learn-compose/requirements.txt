@@ -1,0 +1,4 @@
+docker-py
+loguru
+boto3
+psutil

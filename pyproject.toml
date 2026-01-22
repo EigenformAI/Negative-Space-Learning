@@ -1,0 +1,13 @@
+[project]
+name = "negative-space-learning"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "docker>=7.1.0",
+    "ollama>=0.6.1",
+    "result>=0.17.0",
+    "toml>=0.10.2",
+    "vllm>=0.13.0",
+]

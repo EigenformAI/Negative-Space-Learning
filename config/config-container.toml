@@ -1,0 +1,22 @@
+dev = true
+model_name = "vllm"
+code_host_cache_path = "./code/Your-Model-Name/code/"
+container_ids = ["special-learn-compose_service-a_1", "special-learn-compose_service-b_1"]
+main_container_idx = 0
+
+# These 2 below are mutually exclusive
+dynamic_container = false
+docker_compose_dir = ""  
+
+train_data_save_folder = "./data/Your-Model-Name/multi-container/train_data"
+
+[special_egc]
+count = 1
+max_retries = 3
+
+[strategy_list]
+max_retries = 3
+
+[strategy_code]
+count = 1
+max_retries = 3

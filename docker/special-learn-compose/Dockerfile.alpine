@@ -1,0 +1,56 @@
+FROM alpine
+RUN apk update && apk add --no-cache bash openssl openssh-server openssh-client python3 py3-pip procps coreutils util-linux gcc python3-dev linux-headers musl-dev nmap && rm -rf /var/cache/apk/*
+RUN adduser -D -s /bin/bash alice
+ENV VIRTUAL_ENV=/home/alice/venv
+RUN python3 -m venv /home/alice/venv
+ENV PATH=/home/alice/venv/bin:$PATH
+ENV PYTHONPATH=
+RUN ln -sf /usr/bin/python3 /usr/local/bin/python
+RUN ln -sf /home/alice/venv/bin/python3 /usr/local/bin/python3
+RUN ln -sf /home/alice/venv/bin/pip /usr/local/bin/pip
+RUN ln -sf /home/alice/venv/bin/pip3 /usr/local/bin/pip3
+ADD --chown=alice:alice documents.tar.gz /home/alice/
+ADD --chown=alice:alice tmp.tar.gz /home/alice/
+ADD --chown=alice:alice var.tar.gz /home/alice/
+COPY --chown=root:root randomly_encrypt.sh /home/alice/
+COPY --chown=root:root set_random_permissions.sh /home/alice/
+COPY --chown=alice:alice requirements.txt /home/alice/
+RUN chmod +x /home/alice/randomly_encrypt.sh
+RUN chmod +x /home/alice/set_random_permissions.sh
+RUN cd /home/alice && ./randomly_encrypt.sh
+RUN cd /home/alice && ./set_random_permissions.sh
+
+
+# Configure SSH
+RUN mkdir -p /etc/ssh
+RUN echo "PermitRootLogin yes" >> /etc/ssh/sshd_config
+RUN echo "PasswordAuthentication yes" >> /etc/ssh/sshd_config
+RUN echo "PermitEmptyPasswords yes" >> /etc/ssh/sshd_config
+RUN echo "AllowTcpForwarding yes" >> /etc/ssh/sshd_config
+RUN echo "X11Forwarding no" >> /etc/ssh/sshd_config
+RUN echo "UseDNS no" >> /etc/ssh/sshd_config
+
+RUN passwd -d alice
+RUN passwd -d root
+
+# Generate host keys
+RUN ssh-keygen -A
+
+# Create necessary directory for sshd
+RUN mkdir -p /run/sshd
+
+RUN . /home/alice/venv/bin/activate && pip install --no-cache-dir -r /home/alice/requirements.txt
+WORKDIR /home/alice
+USER 0
+
+# Start SSH server
+EXPOSE 22
+RUN echo "source /home/alice/venv/bin/activate" >> /home/alice/.bashrc
+
+# Create startup script
+RUN echo '#!/bin/sh' > /start.sh && \
+    echo '/usr/sbin/sshd' >> /start.sh && \
+    echo 'su - alice' >> /start.sh && \
+    chmod +x /start.sh
+
+ENTRYPOINT ["/start.sh"]
