@@ -1,13 +1,8 @@
 # Negative Space Learning (NSL)
 
-Code for **Negative-Space Learning**: training a coding agent to improve using only the physical,
-measurable consequences of its own actions — no reward model, no human labels, no other model
-grading its output.
+Every method for making an LLM better at a task needs a signal for what "better" means, and the usual signals are fragile: a learned reward model gets gamed, human labels do not scale, and using another LLM as judge is circular and expensive. Negative-Space Learning tests a different bet. It puts a coding agent inside disposable Linux containers whose only job is to free disk space without breaking themselves, and selects on one thing that cannot be faked: whether space was actually, measurably freed.
 
-The agent lives inside a network of disposable Linux containers whose only job is to find and
-free disk space without breaking the container it depends on. There is no semantic reward
-anywhere in the loop by design: a run either measurably freed space or it didn't. Selection
-happens through that single, hard-to-fake signal rather than through a learned reward.
+The disk task is a proxy. The point is a self-training loop with no reward model, no human labels, and no model grading another model, that still improves the base model generation over generation. Every attempt, successful or not, is logged as training data, so failed runs are as informative as successful ones.
 
 Full method and results: **[Survival is the Only Reward](https://arxiv.org/abs/2601.12310)**.
 
@@ -24,48 +19,17 @@ Full method and results: **[Survival is the Only Reward](https://arxiv.org/abs/2
 Each run (`scripts/main.py`) drives the agent through three stages against a set of live
 Docker containers:
 
-1. **Special environment discovery** — the agent writes and runs code to explore the container
-   beyond the basic `docker`/`df` stats already collected (e.g. what's actually in `/tmp`,
-   `/var`, home directories).
-2. **Strategy generation** — given the environment info, the agent proposes a list of candidate
-   cleanup strategies; one is picked at random to execute.
-3. **Strategy execution** — the agent generates code for the chosen strategy, runs it inside the
-   container, and free disk space is measured before/after and averaged.
+1. **Special environment discovery** — the agent writes and runs code to explore the container beyond the basic `docker`/`df` stats already collected (e.g. what's actually in `/tmp`, `/var`, home directories).
+2. **Strategy generation** — given the environment info, the agent proposes a list of candidate cleanup strategies; one is picked at random to execute.
+3. **Strategy execution** — the agent generates code for the chosen strategy, runs it inside the container, and free disk space is measured before/after and averaged.
 
-Every stage retries with self-correction (the model sees its own error and regenerates) up to a
-configured `max_retries` before the run is abandoned. Every attempt — successful or not — is
-logged as training data (prompt, raw response, extraction/validation/run result), so failed
-attempts are as informative as successful ones.
+Every stage retries with self-correction (the model sees its own error and regenerates) up to a configured `max_retries` before the run is abandoned. Every attempt — successful or not — is logged as training data (prompt, raw response, extraction/validation/run result), so failed attempts are as informative as successful ones.
 
-Containers are built from a deliberately messy image (`docker/special-learn-compose`): three seed
-archives (`documents.tar.gz`, `tmp.tar.gz`, `var.tar.gz`, containing junk files with deliberately
-nonsensical names) are `ADD`ed into `/home/alice/`. Docker's `ADD` auto-extracts local tar
-archives at the destination, so by the time `randomly_encrypt.sh` and `set_random_permissions.sh`
-run in the next layers, the original `.tar.gz` filenames they check for (`[ -f "$file" ]`) are
-very likely already gone — replaced by the extracted `documents/`, `tmp/`, `var/` directories —
-which would make the "encryption" step a silent no-op, and would limit the permission-randomizing
-script (a non-recursive `for file in *`) to the handful of top-level files in `/home/alice`
-(the scripts themselves and `requirements.txt`) rather than the seeded content trees. This is
-inferred from reading the Dockerfile and confirming the archives are valid gzip tarballs, not
-from an actual build — worth confirming with a real build if you're relying on that step for
-per-image variation. Either way, whatever variation these steps produce happens once at **image
-build time** (`RUN` layers), not per container start, so containers booted from one built image
-are identical to each other. Containers are still cheap to destroy and rebuild from a clean
-image, which is what keeps the loop's iteration speed independent of human babysitting.
+Containers are built from a deliberately messy image (`docker/special-learn-compose`): three seed archives (`documents.tar.gz`, `tmp.tar.gz`, `var.tar.gz`, containing junk files with deliberately nonsensical names) are `ADD`ed into `/home/alice/`. Docker's `ADD` auto-extracts local tar archives at the destination, so by the time `randomly_encrypt.sh` and `set_random_permissions.sh` run in the next layers, the original `.tar.gz` filenames they check for (`[ -f "$file" ]`) are very likely already gone — replaced by the extracted `documents/`, `tmp/`, `var/` directories — which would make the "encryption" step a silent no-op, and would limit the permission-randomizing script (a non-recursive `for file in *`) to the handful of top-level files in `/home/alice` (the scripts themselves and `requirements.txt`) rather than the seeded content trees. This is inferred from reading the Dockerfile and confirming the archives are valid gzip tarballs, not from an actual build — worth confirming with a real build if you're relying on that step for per-image variation. Either way, whatever variation these steps produce happens once at **image build time** (`RUN` layers), not per container start, so containers booted from one built image are identical to each other. Containers are still cheap to destroy and rebuild from a clean image, which is what keeps the loop's iteration speed independent of human babysitting.
 
-The variation that actually matters for bulk data collection comes from a different layer:
-`scripts/data_collector.py` wipes `/tmp`, `/var/cache`, `/var/log` and a few home-directory junk
-paths before each iteration and repopulates them from one of five fixed file-mix templates
-(cycled by iteration number), then independently re-scans known junk locations before and after
-the agent runs to compute how much of that self-created, ground-truth-known mess actually got
-cleaned. A run is sorted into `success_full_run` or `failed_full_run` purely by whether
-`actual_cleaned_kb_total > 0` — confirming the "no semantic reward, only a measured physical
-consequence" framing above at the level that's actually used to build training data, independent
-of whatever the base image's build-time steps do or don't do.
+The variation that actually matters for bulk data collection comes from a different layer: `scripts/data_collector.py` wipes `/tmp`, `/var/cache`, `/var/log` and a few home-directory junk paths before each iteration and repopulates them from one of five fixed file-mix templates (cycled by iteration number), then independently re-scans known junk locations before and after the agent runs to compute how much of that self-created, ground-truth-known mess actually got cleaned. A run is sorted into `success_full_run` or `failed_full_run` purely by whether `actual_cleaned_kb_total > 0` — confirming the "no semantic reward, only a measured physical consequence" framing above at the level that's actually used to build training data, independent of whatever the base image's build-time steps do or don't do.
 
-> **Note:** these images intentionally ship with root/passwordless SSH login and other relaxed
-> settings so the agent has something realistic to fix — they're built for isolated,
-> disposable sandboxes only and must never be exposed to an untrusted network.
+> **Note:** these images intentionally ship with root/passwordless SSH login and other relaxed settings so the agent has something realistic to fix — they're built for isolated, disposable sandboxes only and must never be exposed to an untrusted network.
 
 ## Repo layout
 
@@ -96,8 +60,7 @@ src/
 
 ## Setup
 
-Requires Python >= 3.10 and a running Docker daemon. Dependencies are managed with
-[uv](https://github.com/astral-sh/uv):
+Requires Python >= 3.10 and a running Docker daemon. Dependencies are managed with [uv](https://github.com/astral-sh/uv):
 
 ```bash
 uv sync
@@ -110,11 +73,7 @@ cd docker/special-learn-compose
 docker compose up -d --build
 ```
 
-Configure the run in `config/config-container.toml` — model backend (`model_name`), which
-containers to target (`container_ids`), retry limits per stage, and where to write generated
-training data (`train_data_save_folder`). Model backends are selected by name in `get_genner`
-(`src/genner/__init__.py`): `qwen` (Ollama), `vllm` (any OpenAI-compatible server, e.g. a local
-vLLM server), `dream`.
+Configure the run in `config/config-container.toml` — model backend (`model_name`), which containers to target (`container_ids`), retry limits per stage, and where to write generated training data (`train_data_save_folder`). Model backends are selected by name in `get_genner` (`src/genner/__init__.py`): `qwen` (Ollama), `vllm` (any OpenAI-compatible server, e.g. a local vLLM server), `dream`.
 
 ## Usage
 
@@ -147,31 +106,37 @@ uv run python scripts/create_DPO_dataset.py \
   [--min-efficiency-diff 1.0] [--max-pairs 4500] [--similarity-threshold 0.8]
 ```
 
-Fine-tune with LoRA + DPO on the resulting dataset. There's no CLI here — `MODEL_NAME`,
-`DATA_PATH`, and `OUTPUT_DIR` are hardcoded placeholder constants at the top of `main()`
-(`/Your-dataset-path/...`, `/Output-path/...`), so edit those in the script before running:
+Fine-tune with LoRA + DPO on the resulting dataset. There's no CLI here — `MODEL_NAME`, `DATA_PATH`, and `OUTPUT_DIR` are hardcoded placeholder constants at the top of `main()` (`/Your-dataset-path/...`, `/Output-path/...`), so edit those in the script before running:
 
 ```bash
 uv run python scripts/train_DPO.py
 ```
 
-`scripts/unweighteddeltas.py` is a standalone analysis script, not a CLI tool — it hardcodes its
-input (`ThereseStats.xlsx`, expected in the working directory) and output
-(`therese_unweighted_deltas_analysis.xlsx`) filenames, so treat it as a template to copy/adapt
-rather than something to run as-is. Given a spreadsheet of per-generation metrics (success rate,
-% space freed, avg space per iteration, hours to collect a batch), it z-scores the
-generation-over-generation change in each metric and combines them into a single improvement
-score — the composite metric used to compare training lineages in the paper.
+`scripts/unweighteddeltas.py` is a standalone analysis script, not a CLI tool — it hardcodes its input (`ThereseStats.xlsx`, expected in the working directory) and output (`therese_unweighted_deltas_analysis.xlsx`) filenames, so treat it as a template to copy/adapt rather than something to run as-is. Given a spreadsheet of per-generation metrics (success rate, % space freed, avg space per iteration, hours to collect a batch), it z-scores the generation-over-generation change in each metric and combines them into a single improvement score — the composite metric used to compare training lineages in the paper.
 
 ## Training regimes
 
-The paper runs three parallel lineages of the same base model, differing only in which past
-generations' data feed each retraining round: **Terese** (full accumulation — every successful
-run from every prior generation), **Miri** (most-recent-3 generations only), and **Katalin**
-(best-performing-3 generations regardless of recency). Recency windowing (Miri) turns out to be
-the most stable choice over many generations — Terese peaks then declines, Katalin collapses
-outright. See the paper for the full results and the reasoning behind each stage of this
-pipeline.
+The paper runs three parallel lineages of the same base model, differing only in which past generations' data feed each retraining round: **Terese** (full accumulation — every successful run from every prior generation), **Miri** (most-recent-3 generations only), and **Katalin** (best-performing-3 generations regardless of recency). Recency windowing (Miri) turns out to be the most stable choice over many generations — Terese peaks then declines, Katalin collapses outright. See the paper for the full results and the reasoning behind each stage of this pipeline.
+
+## FAQ
+
+**Why disk cleanup? Is this a disk tool?**
+No. Freeing disk space is a proxy task, chosen because the outcome is binary and impossible to fake. The contribution is the selection mechanism, not the cleanup.
+
+**How is a run judged successful?**
+`data_collector.py` seeds each container with a known amount of junk, then independently re-scans the known junk locations before and after the agent runs. A run counts as success only if `actual_cleaned_kb_total > 0`. No model grades the agent's output.
+
+**Does the agent get a reward signal telling it how well it did?**
+No. That is the "negative space". The agent explores, proposes a strategy, and runs it, and can watch `df` itself, but nothing feeds a score back into the loop. Selection happens entirely outside the agent (the measurement in the question above), and the model only ever learns from the resulting pile of successful versus failed transcripts.
+
+**The sandbox containers have passwordless root SSH. Is that safe?**
+Only in an isolated, disposable sandbox. The images ship deliberately insecure so the agent has realistic things to fix. Never expose them to an untrusted network.
+
+**What is the training loop?**
+Collect run logs, build DPO chosen/rejected pairs from successful versus failed runs, LoRA + DPO fine-tune, then feed the new model back in for the next generation. Three data-selection regimes (Terese, Miri, Katalin) are compared in the paper.
+
+**Can I reproduce the paper?**
+The collection and DPO scripts are here. `train_DPO.py` has hardcoded placeholder paths you must edit first, and the three-lineage comparison and final results are in the paper.
 
 ## Citation
 
